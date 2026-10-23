@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace Omouren\McpOauthBundle;
 
+use Mcp\Server\Transport\Http\OAuth\ScopePolicy;
 use Omouren\McpOauthBundle\Controller\DynamicClientRegistrationController;
 use Omouren\McpOauthBundle\DependencyInjection\LeagueCompatibilityPass;
 use Omouren\McpOauthBundle\DependencyInjection\McpHttpPathPass;
 use Omouren\McpOauthBundle\DependencyInjection\PublicBaseUrlPass;
+use Omouren\McpOauthBundle\DependencyInjection\SessionBindingPass;
+use Omouren\McpOauthBundle\EventListener\AccessTokenListener;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
 use Symfony\Component\DependencyInjection\Loader\Configurator\ContainerConfigurator;
@@ -30,6 +33,7 @@ final class McpOauthBundle extends AbstractBundle
     {
         $prefix = rtrim((string) $config['authorization_prefix'], '/');
         $builder->setParameter('mcp_oauth.authorization_prefix', $prefix);
+        $builder->setParameter('mcp_oauth.session_binding', $config['session_binding']);
 
         // $resourcePaths comes from mcp.servers.*.http.path, resolved by McpHttpPathPass.
         $builder->register(McpOauthSettings::class)
@@ -60,6 +64,23 @@ final class McpOauthBundle extends AbstractBundle
         $container->services()
             ->get(DynamicClientRegistrationController::class)
             ->arg('$rateLimiter', null === $rateLimiter ? null : service('limiter.'.$rateLimiter));
+
+        $scopePolicy = $config['scope_policy'];
+        $hasScopePolicy = [] !== array_filter($scopePolicy);
+        if ($hasScopePolicy && !class_exists(ScopePolicy::class)) {
+            throw new \LogicException('The "mcp_oauth.scope_policy" option requires symfony/mcp-bundle 0.15 or later. Run "composer require symfony/mcp-bundle:^0.15".');
+        }
+
+        if ($hasScopePolicy) {
+            $container->services()
+                ->set('mcp_oauth.scope_policy', ScopePolicy::class)
+                ->args([$scopePolicy['default'], $scopePolicy['methods'], $scopePolicy['tools'], $scopePolicy['implies']]);
+        }
+
+        // Set explicitly: ScopePolicy does not exist before mcp/sdk 0.9, so autowiring cannot resolve it there.
+        $container->services()
+            ->get(AccessTokenListener::class)
+            ->arg('$scopePolicy', $hasScopePolicy ? service('mcp_oauth.scope_policy') : null);
     }
 
     public function build(ContainerBuilder $container): void
@@ -67,5 +88,6 @@ final class McpOauthBundle extends AbstractBundle
         $container->addCompilerPass(new McpHttpPathPass());
         $container->addCompilerPass(new LeagueCompatibilityPass());
         $container->addCompilerPass(new PublicBaseUrlPass());
+        $container->addCompilerPass(new SessionBindingPass());
     }
 }

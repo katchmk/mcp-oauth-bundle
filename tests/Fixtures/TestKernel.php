@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Omouren\McpOauthBundle\Tests\Fixtures;
 
 use League\Bundle\OAuth2ServerBundle\Manager\ClientManagerInterface;
+use Mcp\Server\Transport\Http\OAuth\ScopePolicy;
 use Symfony\Bundle\FrameworkBundle\FrameworkBundle;
 use Symfony\Bundle\FrameworkBundle\Kernel\MicroKernelTrait;
 use Symfony\Bundle\SecurityBundle\SecurityBundle;
@@ -46,13 +47,26 @@ final class TestKernel extends Kernel
             'csrf_protection' => true,
             'handle_all_throwables' => true,
         ]);
-        $container->extension('security', [
-            'firewalls' => [
-                'main' => [
-                    'pattern' => '^/',
-                    'security' => false,
-                ],
+        $firewalls = [
+            'main' => [
+                'pattern' => '^/',
+                'security' => false,
             ],
+        ];
+        $accessControl = [];
+        if ('mcp' === $this->environment) {
+            // Like the README: the MCP endpoint needs a League token with the "mcp" scope.
+            $firewalls = ['mcp' => [
+                'pattern' => '^/_mcp',
+                'stateless' => true,
+                'custom_authenticators' => [TestBearerAuthenticator::class],
+            ]] + $firewalls;
+            $accessControl[] = ['path' => '^/_mcp', 'roles' => 'ROLE_OAUTH2_MCP'];
+        }
+        $container->extension('security', [
+            'providers' => ['memory' => ['memory' => null]],
+            'firewalls' => $firewalls,
+            'access_control' => $accessControl,
         ]);
         $container->extension('twig', [
             'default_path' => '%kernel.project_dir%/templates',
@@ -89,8 +103,18 @@ final class TestKernel extends Kernel
                 'rate_limiter' => 'mcp_oauth_register',
             ];
         }
+        // The scope policy needs mcp/sdk 0.9 (symfony/mcp-bundle 0.15+).
+        if ('mcp' === $this->environment && class_exists(ScopePolicy::class)) {
+            $mcpOauthConfig['scope_policy'] = [
+                'tools' => ['delete-everything' => ['mcp:admin']],
+                'implies' => ['mcp:root' => ['mcp:admin']],
+            ];
+        }
         $container->extension('mcp_oauth', $mcpOauthConfig);
         $container->services()
+            ->set(AccessTokenTools::class)
+                ->autoconfigure()
+            ->set(TestBearerAuthenticator::class)
             ->set(UnauthorizedProbeController::class)
                 ->public()
             ->set(DummyLoginController::class)
@@ -105,5 +129,7 @@ final class TestKernel extends Kernel
         $routes->add('app_login', '/login')->controller(DummyLoginController::class);
         $routes->add('oauth2_authorize', '/oauth2/authorize')->controller(DummyLoginController::class);
         $routes->add('mcp_probe', '/_mcp')->controller(UnauthorizedProbeController::class)->methods(['GET']);
+        // After the probe, so mcp-bundle only serves POST /_mcp.
+        $routes->import('.', 'mcp');
     }
 }

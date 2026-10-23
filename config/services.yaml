@@ -12,6 +12,7 @@ services:
             - '../src/Cimd/CimdException.php'
             - '../src/Cimd/ClientIdMetadataDocument.php'
             - '../src/OAuth/ResourceBoundAccessToken.php'
+            - '../src/Session/'
 
     Omouren\McpOauthBundle\Controller\:
         resource: '../src/Controller/'

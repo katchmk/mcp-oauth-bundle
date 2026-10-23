@@ -16,6 +16,11 @@ Install, League wiring, and `security.yaml` live in the [Getting started](../REA
 | `dcr.enabled` | bool | `true` | no |
 | `dcr.redirect_uri_schemes` | string[] | `[]` | no |
 | `dcr.rate_limiter` | string or null | `null` | no |
+| `scope_policy.default` | string[] | `[]` | no |
+| `scope_policy.methods` | map of string[] | `{}` | no |
+| `scope_policy.tools` | map of string[] | `{}` | no |
+| `scope_policy.implies` | map of string[] | `{}` | no |
+| `session_binding` | bool | `true` | no |
 | `resource_indicators` | bool | `true` | no |
 | `issuer_identification` | bool | `true` | no |
 | `public_base_url` | string or null | `null` | yes, unless `framework.trusted_hosts` is set |
@@ -54,6 +59,16 @@ mcp_oauth:
         # Name of a framework.rate_limiter limiter, applied per client IP.
         rate_limiter: ~
 
+    # Scopes MCP requests need besides the firewall checks (mcp-bundle 0.15+). See "Scope policy".
+    scope_policy:
+        default: []
+        methods: {}
+        tools: {}
+        implies: {}
+
+    # Bind each mcp-bundle session to the user and client that created it. See "Session binding".
+    session_binding: true
+
     resource_indicators: true
     issuer_identification: true
 
@@ -66,6 +81,32 @@ mcp_oauth:
 Set `public_base_url` to the public origin of the app. Without it, the issuer and the MCP resource URIs are built from the request `Host` header and the metadata is cached publicly, so anyone could poison a shared cache with a forged host. Leaving it empty is only allowed when [`framework.trusted_hosts`](https://symfony.com/doc/current/reference/configuration/framework.html#trusted-hosts) is configured; otherwise the container fails to compile. Behind a reverse proxy, also configure Symfony `trusted_proxies`.
 
 HTTP paths come from mcp-bundle `mcp.servers.*.http.path` (not from this bundle). Every HTTP server is a protected resource. The firewall `pattern` is written in the app (`^/_mcp`, or a regex covering several paths).
+
+Also set mcp-bundle `mcp.servers.*.http.allowed_hosts` to the host of `public_base_url`, and `allowed_origins` for browser clients (mcp-bundle 0.15+). Otherwise the DNS rebinding protection of mcp-bundle answers 403 for every request that does not come from `localhost`. This bundle adds `insufficient_scope` only to a 403 from Symfony Security or from the scope policy, never to these.
+
+## Scope policy
+
+The firewall decides whether a token may call the MCP endpoint at all (for example `ROLE_OAUTH2_MCP`). `scope_policy` adds the scopes a JSON-RPC method or a tool needs, with the same rules as the mcp/sdk `ScopePolicy`. It requires mcp-bundle 0.15+; with an older version the container fails to compile.
+
+```yaml
+mcp_oauth:
+    scope_policy:
+        default: [mcp]                       # every MCP request
+        methods:
+            'resources/read': ['mcp:read']   # by JSON-RPC method
+        tools:
+            delete-project: ['mcp:admin']    # by tool name, for tools/call
+        implies:
+            'mcp:admin': ['mcp:read']        # a granted mcp:admin also grants mcp:read
+```
+
+When the token lacks a required scope, the MCP endpoint answers `403` with `WWW-Authenticate: Bearer error="insufficient_scope", scope="<required scopes>"`, and the client can start a step-up authorization. Without a token, it answers `401`. Handlers see the expanded scopes in `AccessToken::getScopes()` and `hasScope()`. Add the scopes to League `scopes.available`, and keep `scope_policy.default` empty if the firewall already requires `mcp`.
+
+## Session binding
+
+Clients on protocol versions before 2026-07-28 keep an `Mcp-Session-Id` across requests. With `session_binding: true`, this bundle stores each session of every mcp-bundle server together with a fingerprint of the token's user and OAuth client. A request with a token of another user or client gets `404 Session not found`, the same answer as for an unknown session, so a leaked session id is useless without its owner's token. The same user on another client gets a new session too.
+
+Sessions that existed before you enabled the binding are unknown after it, and clients start a new session once. Set `session_binding: false` only if your MCP server keeps no user data in its sessions.
 
 ## DCR hardening
 

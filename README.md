@@ -47,8 +47,11 @@ mcp:
                 http: true
             http:
                 path: /_mcp   # keep this explicit: mcp-bundle 0.13+ defaults to /mcp/<name>
+                allowed_hosts: [mcp.example.com]   # the host of public_base_url
             registry: '*'
 ```
+
+mcp-bundle's DNS rebinding protection only accepts `localhost`, `127.0.0.1` and `[::1]` as `Host` by default, so set `allowed_hosts` to your public host. Browser clients such as the MCP Inspector also send an `Origin` header: with mcp-bundle 0.15+, list their origins in `allowed_origins` (for example `http://localhost:6274`). Both rejections are a 403 without an OAuth challenge, because a new token does not fix them.
 
 Point this bundle at your existing login (a Symfony route name, not a URL) and set the public origin used as OAuth issuer. `consent: auto` skips the consent page after login; the default `page` renders one at `{authorization_prefix}/consent`.
 
@@ -119,6 +122,31 @@ security:
 
 Behind a reverse proxy, set `mcp_oauth.public_base_url` to the public origin (and Symfony `trusted_proxies`) so issuer and resource URLs are not `http://127.0.0.1`.
 
+## Access token in tools
+
+With mcp-bundle 0.15+, tools, prompts and resources read the League access token through the SDK `RequestContext`:
+
+```php
+use Mcp\Capability\Attribute\McpTool;
+use Mcp\Server\RequestContext;
+
+final class AccountTools
+{
+    #[McpTool(name: 'whoami')]
+    public function whoami(RequestContext $context): string
+    {
+        // Null before mcp-bundle 0.15, or when the firewall did not authenticate a League token.
+        $token = $context->getAccessToken();
+
+        return \sprintf('%s via %s (%s)', $token?->getSubject(), $token?->getClientId(), implode(' ', $token?->getScopes() ?? []));
+    }
+}
+```
+
+`getSubject()` is the League user identifier and `getClientId()` the League client identifier (for CIMD clients, a hash of the `client_id` URL). `hasScope()` checks a scope and `getClaims()` returns the JWT payload.
+
+To require scopes per JSON-RPC method or per tool before the handler runs, configure [`mcp_oauth.scope_policy`](docs/configuration.md#scope-policy). Each mcp-bundle session is also bound to the user and client that created it ([`session_binding`](docs/configuration.md#session-binding)).
+
 ## Isolation
 
 Kernel listeners are registered globally, but they return immediately unless the request is MCP:
@@ -126,7 +154,7 @@ Kernel listeners are registered globally, but they return immediately unless the
 - exact `mcp.servers.*.http.path` (trailing slash allowed, not `/_mcp-admin`)
 - exact `{authorization_prefix}/authorize` or `/token`, and the request targets MCP: RFC 8707 `resource` is the canonical MCP URI, or (if `resource` is absent) a `mcp_oauth.scopes` value is present
 
-WWW-Authenticate and audience checks apply only to the MCP HTTP endpoint. Login redirect, `iss`, CIMD rewrite, and consent apply only to MCP authorize/token. Extra JWT `resource`/`aud` claims are added only when issuing an MCP token.
+WWW-Authenticate, audience, access token and scope policy checks apply only to the MCP HTTP endpoint. Login redirect, `iss`, CIMD rewrite, and consent apply only to MCP authorize/token. Extra JWT `resource`/`aud` claims are added only when issuing an MCP token.
 
 Well-known metadata (`/.well-known/oauth-authorization-server`, `/.well-known/oauth-protected-resource`) is mounted at the host root because RFC 8414 / 9728 require it. Those are this bundle's own routes.
 
